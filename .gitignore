@@ -2,10 +2,12 @@
 __pycache__/
 *.py[cod]
 
-# Yerel ayarlar ve günlükler (şifre içerir, paylaşmayın)
+# Local settings and logs (they contain the password — never commit them)
 config.json
 config.json.*
 *.log
+guncelle.bat
+*.bak
 
 # Windows
 Thumbs.db
