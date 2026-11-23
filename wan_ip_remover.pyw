@@ -43,7 +43,8 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 APP_NAME = "WAN IP Remover"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
+TIMING_PRESETS = ("0.1", "0.32", "1", "2", "5")
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = APP_DIR / "config.json"
 LOG_FILE = APP_DIR / "wan_ip_remover.log"
@@ -156,7 +157,7 @@ STRINGS: dict[str, dict[str, str]] = {
             "the TD-W9970 allows a single admin session."
         ),
         "log.saved_password": "Saved password found; you can leave the password field empty.",
-        "log.started": "Started — the IP will change every {minutes} minutes.",
+        "log.started": "Started — the IP will change every {span}.",
         "log.target_line": "Target: {target} • disconnect gap: {wait} s • timeout: {timeout} s",
         "log.once_started": "One-off IP change started.",
         "log.list_started": "Signing in and listing WAN connections…",
@@ -338,7 +339,7 @@ STRINGS: dict[str, dict[str, str]] = {
             "TD-W9970 tek yönetici oturumu kabul eder."
         ),
         "log.saved_password": "Kayıtlı şifre bulundu; şifre alanı boş bırakılabilir.",
-        "log.started": "Başlatıldı — her {minutes} dakikada bir IP değiştirilecek.",
+        "log.started": "Başlatıldı — IP {span} aralıkla değiştirilecek.",
         "log.target_line": "Hedef: {target} • kesme beklemesi: {wait} sn • zaman aşımı: {timeout} sn",
         "log.once_started": "Tek seferlik IP değiştirme başlatıldı.",
         "log.list_started": "Modeme giriş yapılıyor ve WAN bağlantıları listeleniyor…",
@@ -420,6 +421,15 @@ def t(key: str, **kwargs) -> str:
         except (KeyError, IndexError, ValueError):
             return text
     return text
+
+
+def format_span(seconds: float) -> str:
+    """'19 s' / '2 min' — compact, localised duration."""
+    seconds = float(seconds or 0)
+    if seconds < 60:
+        return f"{round(seconds, 1):g} {t('unit.sec')}"
+    text = f"{seconds / 60:.2f}".rstrip("0").rstrip(".") or "0"
+    return f"{text} {t('unit.min')}"
 
 
 USER_AGENT = (
@@ -548,8 +558,8 @@ class Settings:
     host: str = "192.168.1.1"
     username: str = "admin"
     target: str = "dsl_internet"
-    interval_sec: int = 120
-    disconnect_wait: int = 6
+    interval_sec: float = 19.2
+    disconnect_wait: float = 2
     connect_timeout: int = 75
     password_dpapi: str = ""
     password_plain: str = ""
@@ -591,14 +601,14 @@ def load_settings() -> Settings:
             setattr(settings, name, value)
     for name in ("interval_sec", "disconnect_wait", "connect_timeout"):
         value = data.get(name)
-        if isinstance(value, int):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             setattr(settings, name, value)
     language = data.get("language")
     if language in ("tr", "en"):
         settings.language = language
-    settings.interval_sec = max(60, min(settings.interval_sec, 86_400))
-    settings.disconnect_wait = max(0, min(settings.disconnect_wait, 300))
-    settings.connect_timeout = max(15, min(settings.connect_timeout, 600))
+    settings.interval_sec = round(max(3.0, min(float(settings.interval_sec), 86_400.0)), 1)
+    settings.disconnect_wait = round(max(0.0, min(float(settings.disconnect_wait), 300.0)), 1)
+    settings.connect_timeout = max(5, min(int(settings.connect_timeout), 600))
     return settings
 
 
@@ -1677,21 +1687,25 @@ class Segmented(tk.Canvas):
 
 
 class Stepper(tk.Frame):
+    """Numeric stepper. Click the value to type an exact number."""
+
     def __init__(self, master, value, minimum, maximum, step, on_change,
-                 bg=C.panel, unit="dk"):
+                 bg=C.panel, unit="dk", decimals=0):
         super().__init__(master, bg=bg)
         self.minimum = minimum
         self.maximum = maximum
         self.step = step
         self.on_change = on_change
-        self.value = value
+        self.decimals = decimals
+        self.value = self._clamp(value)
         self.unit = unit
         self.minus = Btn(self, "−", self._dec, "secondary", bg=bg,
                          width=28, height=28, radius=8, font_size=10)
         self.minus.pack(side="left")
-        self.label = tk.Label(self, text=str(value), bg=bg, fg=C.text,
-                              font=(FONT_MONO, 11, "bold"), width=4)
+        self.label = tk.Label(self, text=self.text, bg=bg, fg=C.text,
+                              font=(FONT_MONO, 11, "bold"), width=5, cursor="xterm")
         self.label.pack(side="left")
+        self.label.bind("<Button-1>", self._begin_edit)
         self.plus = Btn(self, "+", self._inc, "secondary", bg=bg,
                         width=28, height=28, radius=8, font_size=10)
         self.plus.pack(side="left")
@@ -1699,12 +1713,32 @@ class Stepper(tk.Frame):
             side="left", padx=(px(7), 0)
         )
 
+    @property
+    def text(self) -> str:
+        if self.decimals <= 0:
+            return str(int(round(self.value)))
+        text = f"{self.value:.{self.decimals}f}"
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _clamp(self, value) -> float:
+        try:
+            number = float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            number = self.minimum
+        number = round(number, self.decimals)
+        return max(self.minimum, min(self.maximum, number))
+
+    def _render(self) -> None:
+        self.label.configure(text=self.text)
+
     def _apply(self, value):
-        value = max(self.minimum, min(self.maximum, int(value)))
-        if value == self.value:
+        value = self._clamp(value)
+        if abs(value - self.value) < 1e-9:
             return
         self.value = value
-        self.label.configure(text=str(value))
+        self._render()
         if self.on_change:
             self.on_change(value)
 
@@ -1715,9 +1749,40 @@ class Stepper(tk.Frame):
         self._apply(self.value + self.step)
 
     def set_value(self, value):
-        value = max(self.minimum, min(self.maximum, int(value)))
-        self.value = value
-        self.label.configure(text=str(value))
+        self.value = self._clamp(value)
+        self._render()
+
+    def _begin_edit(self, _event=None):
+        entry = tk.Entry(
+            self, bg=C.input, fg=C.text, insertbackground=C.lime,
+            relief="flat", justify="center", width=5,
+            font=(FONT_MONO, 11, "bold"), highlightthickness=1,
+            highlightbackground=C.lime, highlightcolor=C.lime,
+        )
+        entry.insert(0, self.text)
+        entry.select_range(0, "end")
+        self.label.pack_forget()
+        entry.pack(side="left", before=self.plus)
+        entry.focus_set()
+
+        def commit(_event=None):
+            self._apply(entry.get())
+            self._end_edit(entry)
+
+        def cancel(_event=None):
+            self._end_edit(entry)
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>", cancel)
+
+    def _end_edit(self, entry: tk.Entry) -> None:
+        try:
+            entry.destroy()
+        except tk.TclError:
+            pass
+        self.label.pack(side="left", before=self.plus)
 
 
 class Select(tk.Canvas):
@@ -1884,7 +1949,7 @@ class App:
         self.stopping = False
         self.auth_failed = False
         self.next_run: float | None = None
-        self.interval_sec = max(60, self.settings.interval_sec)
+        self.interval_sec = max(3.0, float(self.settings.interval_sec))
         self.cycles = 0
         self.run_started: float | None = None
         self.cycle_started: float | None = None
@@ -2222,7 +2287,7 @@ class App:
         self._panel_head(body, fill, t("timing.title"), t("timing.hint"))
 
         self.preset = Segmented(
-            body, ["1", "2", "5", "10", "30"], str(max(1, self.interval_sec // 60)),
+            body, list(TIMING_PRESETS), "",
             self._on_preset, bg=fill, height=26, font_size=8,
         )
         self.preset.pack(fill="x", pady=(0, px(8)))
@@ -2232,15 +2297,16 @@ class App:
         gridbox.columnconfigure(1, weight=1)
 
         rows = (
-            (t("timing.interval"), 1, 1440, 1, t("unit.min"), "interval"),
-            (t("timing.gap"), 0, 300, 1, t("unit.sec"), "wait"),
-            (t("timing.timeout"), 15, 600, 5, t("unit.sec"), "timeout"),
+            (t("timing.interval"), 0.05, 1440, 0.05, t("unit.min"), "interval", 2),
+            (t("timing.gap"), 0, 300, 0.5, t("unit.sec"), "wait", 1),
+            (t("timing.timeout"), 5, 600, 5, t("unit.sec"), "timeout", 0),
         )
         self.steppers: dict[str, Stepper] = {}
-        for index, (title, low, high, step, unit, key) in enumerate(rows):
+        for index, (title, low, high, step, unit, key, decimals) in enumerate(rows):
             tk.Label(gridbox, text=title, bg=fill, fg=C.muted,
                      font=(FONT_UI, 8)).grid(row=index, column=0, sticky="w", pady=px(4))
-            stepper = Stepper(gridbox, 2, low, high, step, None, bg=fill, unit=unit)
+            stepper = Stepper(gridbox, 2, low, high, step, None, bg=fill,
+                              unit=unit, decimals=decimals)
             stepper.on_change = self._on_stepper_change
             stepper.grid(row=index, column=1, sticky="e", pady=px(4))
             self.steppers[key] = stepper
@@ -2294,16 +2360,16 @@ class App:
     def _demo_state(self) -> None:
         """--demo only: fake state so the UI renders populated."""
         now = time.time()
-        self.interval_sec = 120
+        self.interval_sec = 19.2
         self.cycles = 12
-        self.last_change = now - 42
+        self.last_change = now - 8
         self.run_started = now - 3725
         self.running = True
-        self.next_run = now + 94
-        self.steppers["interval"].set_value(2)
-        self.steppers["wait"].set_value(6)
+        self.next_run = now + 11
+        self.steppers["interval"].set_value(0.32)
+        self.steppers["wait"].set_value(2)
         self.steppers["timeout"].set_value(75)
-        self.preset.set_value("2")
+        self.preset.set_value("0.32")
         self._update_meta()
         self._apply_ip("85.104.233.17")
         for changed, seconds in (
@@ -2316,10 +2382,10 @@ class App:
         self._set_status(t("status.idle"), "run")
         self._update_buttons()
         self.update_status.configure(text=t("update.current", version=APP_VERSION), fg=C.green)
-        self._log("info", t("log.started", minutes=2))
+        self._log("info", t("log.started", span=format_span(19.2)))
         self._log(
             "dim",
-            t("log.target_line", target="dsl_internet", wait=6, timeout=75),
+            t("log.target_line", target="dsl_internet", wait="2", timeout=75),
         )
         self._log("dim", t("log.login_ok"))
         self._log(
@@ -2341,23 +2407,29 @@ class App:
         self.user_var.set(self.settings.username)
         self.target_var.set(self.settings.target)
         self.target_select.set_values([self.settings.target or "dsl_internet"])
-        minutes = max(1, self.settings.interval_sec // 60)
+        minutes = max(0.05, self.settings.interval_sec / 60)
         self.steppers["interval"].set_value(minutes)
         self.steppers["wait"].set_value(self.settings.disconnect_wait)
         self.steppers["timeout"].set_value(self.settings.connect_timeout)
-        self.preset.set_value(str(minutes) if minutes in (1, 2, 5, 10, 30) else "")
+        self._sync_preset()
         self.target_var.trace_add("write", lambda *_a: self._update_meta())
         self._update_meta()
 
+    def _sync_preset(self) -> None:
+        text = self.steppers["interval"].text
+        self.preset.set_value(text if text in TIMING_PRESETS else "")
+
     def _on_preset(self, value) -> None:
         try:
-            minutes = int(value)
+            minutes = float(str(value).replace(",", "."))
         except (TypeError, ValueError):
             return
         self.steppers["interval"].set_value(minutes)
+        self._sync_preset()
+        self._update_meta()
 
-    def _on_interval_change(self, value) -> None:
-        self.preset.set_value(str(value) if value in (1, 2, 5, 10, 30) else "")
+    def _on_interval_change(self, _value) -> None:
+        self._sync_preset()
         self._update_meta()
 
     def _on_stepper_change(self, _value) -> None:
@@ -2371,8 +2443,8 @@ class App:
             text=t(
                 "meta.line",
                 target=target,
-                minutes=self.steppers["interval"].value,
-                wait=self.steppers["wait"].value,
+                minutes=self.steppers["interval"].text,
+                wait=self.steppers["wait"].text,
             )
         )
 
@@ -2526,16 +2598,16 @@ class App:
             return None
         target = self.target_var.get().strip()
 
-        interval_min = max(1, min(1440, int(self.steppers["interval"].value)))
-        wait_sec = max(0, min(300, int(self.steppers["wait"].value)))
-        timeout_sec = max(15, min(600, int(self.steppers["timeout"].value)))
+        interval_min = max(0.05, min(1440.0, float(self.steppers["interval"].value)))
+        wait_sec = max(0.0, min(300.0, float(self.steppers["wait"].value)))
+        timeout_sec = max(5, min(600, int(self.steppers["timeout"].value)))
 
         settings = Settings(
             host=host,
             username=username,
             target=target,
-            interval_sec=interval_min * 60,
-            disconnect_wait=wait_sec,
+            interval_sec=round(interval_min * 60, 1),
+            disconnect_wait=round(wait_sec, 1),
             connect_timeout=timeout_sec,
             password_dpapi=self.settings.password_dpapi,
             password_plain=self.settings.password_plain,
@@ -2586,14 +2658,14 @@ class App:
         self._update_stats()
         self._log(
             "info",
-            t("log.started", minutes=settings.interval_sec // 60),
+            t("log.started", span=format_span(settings.interval_sec)),
         )
         self._log(
             "dim",
             t(
                 "log.target_line",
                 target=settings.target or t("meta.auto"),
-                wait=settings.disconnect_wait,
+                wait=f"{settings.disconnect_wait:g}",
                 timeout=settings.connect_timeout,
             ),
         )
@@ -2868,25 +2940,24 @@ class App:
             client.ppp_action("ACT_PPP_CONN", stack)
             post(("log", "info", t("log.reconnect_cmd")))
 
-            deadline = time.time() + max(15, settings.connect_timeout)
+            deadline = time.time() + max(5, settings.connect_timeout)
             new_ip = ""
             last_state = ""
             stopped_early = False
             while time.time() < deadline:
-                if stop.wait(3):
-                    stopped_early = True
-                    break
                 entries = client.list_wan()
                 current = find_entry(entries, name, stack)
-                if current is None:
-                    continue
-                current_state = current.get("connectionStatus", "")
-                if current_state != last_state:
-                    last_state = current_state
-                    post(("log", "dim", t("log.state_change", state=current_state or "?")))
-                current_ip = clean_ip(current.get("externalIPAddress"))
-                if current_state == "Connected" and current_ip:
-                    new_ip = current_ip
+                if current is not None:
+                    current_state = current.get("connectionStatus", "")
+                    if current_state != last_state:
+                        last_state = current_state
+                        post(("log", "dim", t("log.state_change", state=current_state or "?")))
+                    current_ip = clean_ip(current.get("externalIPAddress"))
+                    if current_state == "Connected" and current_ip:
+                        new_ip = current_ip
+                        break
+                if stop.wait(0.75):
+                    stopped_early = True
                     break
 
             if stopped_early:

@@ -4,8 +4,8 @@
 
 WAN IP Remover signs in to a TP-Link TD-W9970 router, drops the selected PPPoE WAN
 session and brings it straight back up, so the ISP hands out a fresh public IP.
-The cycle repeats on your chosen interval (2 minutes by default) and stops the
-moment you press **Stop**.
+The cycle repeats on the interval you choose — down to a few seconds, 0.32 min
+(≈19 s) by default — and stops the moment you press **Stop**.
 
 It never touches your DSL username or password — only the live PPPoE session is
 renewed.
@@ -70,12 +70,13 @@ If the window does not appear, run **`Start_Console.bat`** to see the error.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| Interval | 2 min | Wait after a cycle finishes before the next one |
-| Disconnect gap | 6 s | Time the PPPoE session stays down (longer gap → better chance of a new IP) |
+| Interval | 0.32 min | Wait after a cycle finishes before the next one (decimals allowed, min 0.05 min = 3 s) |
+| Disconnect gap | 2 s | Time the PPPoE session stays down (longer gap → better chance of a new IP) |
 | Connect timeout | 75 s | How long to wait for the session to come back with an IP |
 
-The interval, gap and timeout are also editable with the steppers; presets jump
-to 1, 2, 5, 10 or 30 minutes.
+Click a stepper value to type an exact number (for example `0.32`). The presets
+jump to 0.1, 0.32, 1, 2 or 5 minutes; the `+` / `−` buttons step the interval by
+0.05 min (3 s).
 
 ## How it works
 
